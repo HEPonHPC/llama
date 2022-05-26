@@ -1,10 +1,11 @@
 import numpy as np
-from typing_extensions import Protocol
+#from typing_extensions import Protocol
 from typing import Union, Tuple, List
 from mpi4py import MPI
+import boost_histogram as bh
+import pandana
 
-
-class array:
+class Array:
     """ Wraps a numpy array for data-parallel operations
     """
 
@@ -59,93 +60,87 @@ class array:
             return np.matmul(self.data, other)
 
 
-class SupportsArray(Protocol):
-    def __array__(self: "SupportsArray") -> float:
-        pass
+#class SupportsArray(Protocol):
+#    def __array__(self: "SupportsArray") -> float:
+#        pass
 
+class Axis:
+    def __init__(self, 
+                 *, 
+                 start=None,
+                 stop=None,
+                 n=None,
+                 edges=None,
+                 name='',
+    ):
+        self.name = name
+        if start is not None and stop is not None and n is not None:
+            self.baxis = bh.axis.Regular(n,
+                                        start,
+                                        stop,
+                                        growth=False,
+                                        circular=False,
+                                        overflow=True,
+                                        underflow=True)
+        elif edges:
+            self.baxis = bh.axis.Variable(edges,
+                                         growth=False,
+                                         circular=False,
+                                         overflow=True,
+                                         underflow=True)
+        else:
+            self.baxis = None
+            
 
-class histogram(array):
+    def __call__(self):
+        return self.baxis
+
+    def from_boost(boost_axis, name=''):
+        ret = Axis()
+        ret.name = name
+        ret.axis = boost_axis
+
+class Histogram(Array):
     """ Histogram events as a function of some event property
-    with associated exposure
     """
 
     def __init__(
-        self,
-        x: Union[SupportsArray, None],
-        bins: np.array,
-        exposure: float = 1,
-        contents: Union[np.array, array] = None,
-        **kwargs,
+            self,
+            xaxis,
+            yaxis=None,
+            zaxis=None,
     ):
-        """[summary]
+        self.xaxis = xaxis
+        self.yaxis = yaxis
+        self.zaxis = zaxis
 
-        Args:
-            x (SupportsArray): Data to be histogrammed. Object must be a list,
-                               or implement __array__
-            bins (np.array): Array of bin edges
-            exposure (float, optional): Exposure representing data being histogrammed.
-                                        Defaults to 1.
-            contents (array, optional): Used to construct a filled histogram.
-                                        Defaults to None.
-            **kwargs : forwarded to np.histogram
-        """
-        if contents is None:
-            n, bins = np.histogram(x, bins=bins, **kwargs)
+        self.ndim = 1
+        if yaxis: self.ndim = self.ndim+1
+        if zaxis: self.ndim = self.ndim+1
+
+        self.bhist = bh.Histogram(self.get_axes(),
+                                  storage=bh.storage.Weight())
+
+        self.set_w2()
+
+    def set_w2(self):
+        self.errors = np.sqrt(self.bhist.variances(flow=True))
+
+    def get_axes(self): 
+        if self.ndim == 1:
+            return self.xaxis()
+        elif self.ndim == 2:
+            return self.xaxis(), self.yaxis()
         else:
-            n = contents
-        super().__init__(n)
-        self._bins = bins
-        self.exposure = exposure
+            return self.xaxis(), self.yaxis(), self.zaxis()
 
-    @property
-    def bins(self) -> np.array:
-        return self._bins
-
-    @property
-    def contents(self) -> np.array:
-        return self._data
-
-    def array(self) -> array:
-        return self.data
-
-    def __getitem__(self, item) -> "histogram":
-        """Slice this histogram with 'item'.
-        It's possible that this returns a histogram with fewer dimensions than this"""
-
-        sliced = self.data[item]
-        if sliced.ndim == 1:
-            return histogram(
-                None,
-                bins=None,  # what to do with bins? is a sparse histogram needed?
-                exposure=self.exposure,
-                contents=sliced,
-            )
-        elif sliced.ndim == 2:
-            return histogram2d(
-                None,
-                None,
-                bins=None,  # what to do with bins? is a sparse histogram needed?
-                exposure=self.exposure,
-                contents=sliced,
-            )
-
-    def scale_by_exposure(self, exposure: float) -> "histogram":
-        """Return a new histogram that has been scaled by the input exposure.
-        Scaling is done by multiplying the contents of this histogram by 
-        the ratio of the input exposure and the exposure this histogram was created with
-
-        Args:
-            exposure (float): Exposure to scale this histogram with
-
-        Returns:
-            histogram : Rescaled histogram
-        """
-        return type(self)(
-            *([None] * self.data.ndim),
-            self._bins,
-            exposure=exposure,
-            contents=self.contents * exposure / self.exposure,
-        )
+    def fill(self, data, weights=None):
+        assert data.ndim == self.ndim
+        if self.ndim == 1:
+            self.bhist.fill(data, weight=weights)
+        else:
+            self.bhist.fill(*np.hsplit(data, data.shape[1]), weight=weights)
+        self.set_w2()
 
     def _bins_consistent_with(self, other: np.array):
         if np.array(self.bins).shape != np.array(other.bins).shape:
@@ -153,10 +148,17 @@ class histogram(array):
         else:
             return (self.bins == other.bins).all()
 
+    def get_contents(self, flow=False):
+        return self.bhist.values(flow=flow)
+
+    def get_errors(self, flow=False):
+        if flow:
+            return self.errors
+        else:
+            return self.errors[1:-1]
+            
     def __truediv__(self, other: Union["histogram", int, float]) -> "histogram":
         """If other is a histogram, do bin by bin division.
-        Scale other histogram to this exposure before operating. 
-        The resulting histogram has exposure of 1
 
         Since a1 / a2 + b1 / b2 =/= (a1 + b1) / (a2 + b2)
         both histograms in this operation will be reduced then divided.
@@ -178,23 +180,19 @@ class histogram(array):
             return type(self)(
                 *([None] * self.data.ndim),
                 bins=self.bins,
-                exposure=self.exposure,
-                contents=self.contents
-                / other.scale_by_exposure(self.exposure).contents,
+                contents=self.contents / other.contents,
             )
         elif isinstance(other, float) | isinstance(other, int):
             return type(self)(
                 *([None] * self.data.ndim),
                 self.bins,
-                exposure=1,
                 contents=self.contents / other,
             )
         else:
             raise TypeError
 
     def __eq__(self, other: "histogram") -> bool:
-        """Two histograms are equal if their contents are equal when scaled
-        to the same exposure
+        """Two histograms are equal if their contents are equal
 
         TODO: Does this need to compare the global histograms or local ones?
         """
@@ -203,15 +201,13 @@ class histogram(array):
                 return False
             else:
                 return (
-                    self.contents == other.contents * self.exposure / other.exposure
+                    self.contents == other.contents
                 ).all()
         else:
             return False
 
     def __mul__(self, other: Union["histogram", int, float]) -> "histogram":
         """If other is a histogram, do bin by bin multiplication.
-        The resulting histogram has exposure equal to the produce of the two
-        histograms.
 
         Since a1 / a2 + b1 / b2 =/= (a1 + b1) / (a2 + b2)
         both histograms in this operation will be reduced then divided.
@@ -233,14 +229,12 @@ class histogram(array):
             return type(self)(
                 *([None] * self.data.ndim),
                 bins=self.bins,
-                exposure=self.exposure * other.exposure,
                 contents=self.contents * other.contents,
             )
         elif isinstance(other, float) | isinstance(other, int):
             return type(self)(
                 *([None] * self.data.ndim),
                 self.bins,
-                exposure=self.exposure,
                 contents=self.contents * other,
             )
         else:
@@ -248,7 +242,6 @@ class histogram(array):
 
     def __add__(self, other: Union["histogram", int, float]) -> "histogram":
         """If other is a histogram, do bin-by-bin addition.
-        Scale other histogram to this exposure before operating.
         Since addition is commutative, no reductions occur
 
         If other is numeric, add all bin contents by other
@@ -261,15 +254,12 @@ class histogram(array):
             return type(self)(
                 None,
                 self.bins,
-                exposure=self.exposure,
-                contents=self.contents
-                + other.scale_by_exposure(self.exposure).contents,
+                contents=self.contents + other.contents,
             )
         elif isinstance(other, float) | isinstance(other, int):
             return type(self)(
                 *([None] * self.data.ndim),
                 self.bins,
-                exposure=self.exposure,
                 contents=self.contents + other,
             )
         else:
@@ -277,7 +267,6 @@ class histogram(array):
 
     def __sub__(self, other: "histogram") -> "histogram":
         """If other is a histogram, do bin-by-bin subtraction.
-        Scale other histogram to this exposure before operating.
         Since addition is commutative, no reductions occur.
 
 
@@ -304,47 +293,41 @@ class histogram(array):
         return type(self)(
             *([None] * self.data.ndim),
             bins=self.bins,
-            exposure=self.exposure,
             contents=self._data.sum(*args, **kwargs),
         )
-
-    def __repr__(self) -> str:
-        return self.contents.__repr__()
 
     def __len__(self):
         return len(self.bins)
 
+class Spectrum(Histogram):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.exposure = None
 
-class histogram2d(histogram):
-    def __init__(
-        self,
-        x: SupportsArray,
-        y: SupportsArray,
-        bins: Tuple[np.array, np.array],
-        exposure: float = 1,
-        contents: Union[np.array, array] = None,
-        **kwargs,
-    ):
-        """[summary]
+    def fill(self, data, exposure, weights=None):
+        super().fill(data, weights)
+        self.exposure = exposure.sum()
+        
+    @staticmethod
+    def from_pandana(pand, *args, **kwargs):
+        assert isinstance(pand, pandana.core.spectrum.Spectrum)
+        s = Spectrum(*args, **kwargs)
+        s.fill(pand.df(), pand.POT(), pand.weight())
+        return s
 
-            Args:
-                x (SupportsArray): Data to be histogrammed.
-                                   Object must have __array__ function
-                bins (Tuple[np.array, np.array]): Tuple of bin edges
-                exposure (float, optional): Exposure representing the data being histogrammed.
-                                            Defaults to 1.
-                contents (array, optional): Used to construct a filled histogram.
-                                            Defaults to None.
-                **kwargs : forwarded to np.histogram2d
-            """
-        if contents is None:
-            try:
-                n, binsx, binsy = np.histogram2d(
-                    x.__array__(), y.__array__(), bins=bins, **kwargs
-                )
-            except AttributeError:
-                n, binsx, binsy = np.histogram2d(x, y, bins=bins, **kwargs)
-            bins = (binsx, binsy)
+    def get_exposure(self):
+        return self.exposure
+
+    def scale_to_exposure(self, new_exposure):
+        scale = new_exposure / old_exposure
+        # make new spectrum by filling boost histogram with entries at
+        # bin centers and weights equal to rescaled contents
+        snew = Spectrum(xaxis, yaxis, zaxis)
+        
+        
+    def __add__(self, other):
+        if isinstance(other, Spectrum):
+            pass
         else:
-            n = contents
-        super().__init__(None, bins, exposure=exposure, contents=n)
+            pass
+            
