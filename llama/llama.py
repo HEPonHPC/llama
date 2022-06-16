@@ -3,6 +3,7 @@ import numpy as np
 # from typing_extensions import Protocol
 from typing import Union, Tuple, List
 from mpi4py import MPI
+import h5py
 import boost_histogram as bh
 import pandana
 
@@ -76,14 +77,47 @@ class AxisFactory:
 
     @staticmethod
     def Regular(label, *args, **kwargs):
-        return bh.axis.Regular(*args, metadata=label, **AxisFactory.defaults, **kwargs)
+        return bh.axis.Regular(
+            *args, metadata=label, **AxisFactory.defaults, **kwargs
+    )
 
     @staticmethod
     def Variable(label, *args, **kwargs):
-        self.baxis = bh.axis.Variable(
+        return bh.axis.Variable(
             *args, metadata=label, **AxisFactory.defaults, **kwargs
         )
 
+    @staticmethod
+    def from_array(label, edges, axtype):
+        if issubclass(axtype, bh.axis.Regular):
+            return AxisFactory.Regular(label, 
+                                       bins=len(edges)-1,
+                                       start=edges[0],
+                                       stop=edges[-1])
+        elif issubclass(axtype, bh.axis.Variable):
+            return AxisFactory.Variable(label, edges)
+
+    @staticmethod
+    def saveto(axis, group, name):
+        if axis is not None:
+            d = group.create_dataset(name,
+                                     data=axis.edges,
+                                     compression='gzip')
+            d.attrs['label'] = axis.metadata
+            d.attrs['type'] = 'regular' if isinstance(axis, bh.axis.Regular) else 'variable'
+            return d
+    
+    @staticmethod
+    def loadfrom(group, name):
+        if name in group:
+            d = group.get(name)
+            atype = d.attrs['type']
+            atype = bh.axis.Regular if atype == 'regular' else bh.axis.Variable
+            return AxisFactory.from_array(d.attrs['label'],
+                                          d[:].flatten(),
+                                          atype)
+            
+        
 
 class HistProxy:
     def __init__(self, hist):
@@ -126,13 +160,13 @@ class Histogram:
             self.ndim = self.ndim + 1
 
         if self.ndim == 1:
-            axes = self.xaxis
+            axes = (self.xaxis,)
         elif self.ndim == 2:
             axes = (self.xaxis, self.yaxis)
         else:
             axes = (self.xaxis, self.yaxis, self.zaxis)
 
-        self.bhist = bh.Histogram(axes, storage=bh.storage.Weight())
+        self.bhist = bh.Histogram(*axes, storage=bh.storage.Weight())
 
         self.set_w2()
 
@@ -178,12 +212,8 @@ class Histogram:
     def set_w2(self):
         self.errors = np.sqrt(self.bhist.variances(flow=True))
 
-    def fill(self, data, weights=None):
-        assert data.ndim == self.ndim
-        if self.ndim == 1:
-            self.bhist.fill(data, weight=weights)
-        else:
-            self.bhist.fill(*np.hsplit(data, data.shape[1]), weight=weights)
+    def fill(self, *args, **kwargs):
+        self.bhist.fill(*args, **kwargs)
         self.set_w2()
 
     def _axes_consistent_with(self, other):
@@ -199,9 +229,9 @@ class Histogram:
                 centers[1:-1] = axis.centers
                 return centers
 
-            return (pad_with_flow(ax) for ax in self.bhist.axes)
+            return [pad_with_flow(ax) for ax in self.bhist.axes]
         else:
-            return self.bhist.axes.centers
+            return [centers.flatten() for centers in self.bhist.axes.centers]
 
     def get_contents(self, flow=False):
         return self.bhist.values(flow=flow)
@@ -209,7 +239,9 @@ class Histogram:
     def set_contents(self, contents):
         self.bhist.reset()
         flow = contents.shape == self.bhist.counts(flow=True).shape
-        self.bhist.fill(*self.get_bin_centers(flow), weight=contents)
+        self.bhist.fill(*[a.flatten() 
+                          for a in np.meshgrid(*self.get_bin_centers(flow))],
+                        weight=contents)
 
     def get_errors(self, flow=False):
         if flow:
@@ -265,7 +297,7 @@ class Histogram:
 
         TODO: Does this need to compare the global histograms or local ones?
         """
-        if isinstance(other, histogram):
+        if isinstance(other, Histogram):
             return self.bhist == other.bhist
         else:
             return False
@@ -422,10 +454,10 @@ class Histogram:
         return self.bhist.kind
 
     def values():
-        return self.bhist.values()
+        return self.get_contents()
 
     def variances():
-        return self.bhist.variances()
+        return self.get_errors()
 
     def counts():
         return self.bhist.counts()
@@ -433,6 +465,47 @@ class Histogram:
     @property
     def axes(self):
         return self.bhist.axes
+
+    def saveto(self, filename_or_handle, group_name):
+        if isinstance(filename_or_handle, str):
+            filename_or_handle = h5py.File(filename_or_handle, 'r+')
+        
+        group = filename_or_handle.create_group(group_name)
+        group.create_dataset('contents', 
+                             data=self.get_contents(flow=True), 
+                             compression='gzip')
+        group.create_dataset('errors',
+                             data=self.get_errors(flow=True),
+                             compression='gzip')
+        AxisFactory.saveto(self.xaxis, group, 'xaxis')
+        AxisFactory.saveto(self.yaxis, group, 'yaxis')
+        AxisFactory.saveto(self.zaxis, group, 'zaxis')
+
+        return group
+
+    @staticmethod
+    def loadfrom(filename_or_handle, group_name, return_group=False):
+        if isinstance(filename_or_handle, str):
+            filename_or_handle = h5py.File(filename_or_handle, 'r')
+        group = filename_or_handle.get(group_name)
+        contents = group.get('contents')[:]
+        errors = group.get('errors')[:]
+
+        xaxis = AxisFactory.loadfrom(group, 'xaxis')
+        yaxis = AxisFactory.loadfrom(group, 'yaxis')
+        zaxis = AxisFactory.loadfrom(group, 'zaxis')
+
+        hist = Histogram.from_filled(
+            contents=contents,
+            errors=errors,
+            xaxis=xaxis,
+            yaxis=yaxis,
+            zaxis=zaxis
+        )
+        if return_group:
+            return hist, group
+        else:
+            return hist
 
 
 class Spectrum(Histogram):
@@ -451,7 +524,7 @@ class Spectrum(Histogram):
         )
 
     def fill(self, data, exposure, weights=None):
-        super().fill(data, weights)
+        super().fill(data, weight=weights)
         self.exposure = exposure.sum()
 
     @staticmethod
@@ -547,3 +620,28 @@ class Spectrum(Histogram):
     def __eq__(self, other):
         eq_exposure = self.exposure == other.exposure
         return eq_exposure & super().__eq__(other)
+
+    def saveto(self, filename_or_handle, group_name):
+        group = super().saveto(filename_or_handle, group_name)
+        group.attrs['exposure'] = self.exposure
+
+    @staticmethod
+    def loadfrom(filename_or_handle, group_name, return_group=False):
+        hist, group = Histogram.loadfrom(filename_or_handle, 
+                                         group_name, 
+                                         return_group=True)
+        spec = Spectrum.from_filled(
+            contents=hist.get_contents(True),
+            errors=hist.get_errors(True),
+            exposure=group.attrs['exposure'],
+            xaxis=hist.xaxis,
+            yaxis=hist.yaxis,
+            zaxis=hist.zaxis
+        )
+        if return_group:
+            return spec, group
+        else:
+            return spec
+
+        
+        
