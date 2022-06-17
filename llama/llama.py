@@ -79,47 +79,39 @@ class AxisFactory:
 
     @staticmethod
     def Regular(label, *args, **kwargs):
-        return bh.axis.Regular(
-            *args, metadata=label, **AxisFactory.defaults, **kwargs
-    )
+        return bh.axis.Regular(*args, metadata=label, **AxisFactory.defaults, **kwargs)
 
     @staticmethod
     def Variable(label, *args, **kwargs):
-        return bh.axis.Variable(
-            *args, metadata=label, **AxisFactory.defaults, **kwargs
-        )
+        return bh.axis.Variable(*args, metadata=label, **AxisFactory.defaults, **kwargs)
 
     @staticmethod
     def from_array(label, edges, axtype):
         if issubclass(axtype, bh.axis.Regular):
-            return AxisFactory.Regular(label, 
-                                       bins=len(edges)-1,
-                                       start=edges[0],
-                                       stop=edges[-1])
+            return AxisFactory.Regular(
+                label, bins=len(edges) - 1, start=edges[0], stop=edges[-1]
+            )
         elif issubclass(axtype, bh.axis.Variable):
             return AxisFactory.Variable(label, edges)
 
     @staticmethod
     def saveto(axis, group, name):
         if axis is not None:
-            d = group.create_dataset(name,
-                                     data=axis.edges,
-                                     compression='gzip')
-            d.attrs['label'] = axis.metadata
-            d.attrs['type'] = 'regular' if isinstance(axis, bh.axis.Regular) else 'variable'
+            d = group.create_dataset(name, data=axis.edges, compression="gzip")
+            d.attrs["label"] = axis.metadata
+            d.attrs["type"] = (
+                "regular" if isinstance(axis, bh.axis.Regular) else "variable"
+            )
             return d
-    
+
     @staticmethod
     def loadfrom(group, name):
         if name in group:
             d = group.get(name)
-            atype = d.attrs['type']
-            atype = bh.axis.Regular if atype == 'regular' else bh.axis.Variable
-            return AxisFactory.from_array(d.attrs['label'],
-                                          d[:].flatten(),
-                                          atype)
-            
-        
+            atype = d.attrs["type"]
+            atype = bh.axis.Regular if atype == "regular" else bh.axis.Variable
+            return AxisFactory.from_array(d.attrs["label"], d[:].flatten(), atype)
+
 
 class HistProxy:
     def __init__(self, hist):
@@ -174,7 +166,6 @@ class Histogram:
 
         self.root = 0
         self.proxy = HistProxy(self)
-
 
     def set_root(self, rank):
         self.root = rank
@@ -242,9 +233,10 @@ class Histogram:
     def set_contents(self, contents):
         self.bhist.reset()
         flow = contents.shape == self.bhist.counts(flow=True).shape
-        self.bhist.fill(*[a.flatten() 
-                          for a in np.meshgrid(*self.get_bin_centers(flow))],
-                        weight=contents)
+        self.bhist.fill(
+            *[a.flatten() for a in np.meshgrid(*self.get_bin_centers(flow))],
+            weight=contents
+        )
 
     def get_errors(self, flow=False):
         if flow:
@@ -471,8 +463,8 @@ class Histogram:
 
     def saveto(self, filename_or_handle, group_name):
         if isinstance(filename_or_handle, str):
-            filename_or_handle = h5py.File(filename_or_handle, 'r+')
-        
+            filename_or_handle = h5py.File(filename_or_handle, "r+")
+
         comm = MPI.COMM_WORLD
         if comm.Get_size() > 1:
             hist = self.gather()
@@ -481,36 +473,32 @@ class Histogram:
 
         if comm.Get_rank() == self.root:
             group = filename_or_handle.create_group(group_name)
-            group.create_dataset('contents', 
-                                 data=hist.get_contents(flow=True), 
-                                 compression='gzip')
-            group.create_dataset('errors',
-                                 data=hist.get_errors(flow=True),
-                                 compression='gzip')
-            AxisFactory.saveto(hist.xaxis, group, 'xaxis')
-            AxisFactory.saveto(hist.yaxis, group, 'yaxis')
-            AxisFactory.saveto(hist.zaxis, group, 'zaxis')
+            group.create_dataset(
+                "contents", data=hist.get_contents(flow=True), compression="gzip"
+            )
+            group.create_dataset(
+                "errors", data=hist.get_errors(flow=True), compression="gzip"
+            )
+            AxisFactory.saveto(hist.xaxis, group, "xaxis")
+            AxisFactory.saveto(hist.yaxis, group, "yaxis")
+            AxisFactory.saveto(hist.zaxis, group, "zaxis")
 
             return group
 
     @staticmethod
     def loadfrom(filename_or_handle, group_name, return_group=False):
         if isinstance(filename_or_handle, str):
-            filename_or_handle = h5py.File(filename_or_handle, 'r')
+            filename_or_handle = h5py.File(filename_or_handle, "r")
         group = filename_or_handle.get(group_name)
-        contents = group.get('contents')[:]
-        errors = group.get('errors')[:]
+        contents = group.get("contents")[:]
+        errors = group.get("errors")[:]
 
-        xaxis = AxisFactory.loadfrom(group, 'xaxis')
-        yaxis = AxisFactory.loadfrom(group, 'yaxis')
-        zaxis = AxisFactory.loadfrom(group, 'zaxis')
+        xaxis = AxisFactory.loadfrom(group, "xaxis")
+        yaxis = AxisFactory.loadfrom(group, "yaxis")
+        zaxis = AxisFactory.loadfrom(group, "zaxis")
 
         hist = Histogram.from_filled(
-            contents=contents,
-            errors=errors,
-            xaxis=xaxis,
-            yaxis=yaxis,
-            zaxis=zaxis
+            contents=contents, errors=errors, xaxis=xaxis, yaxis=yaxis, zaxis=zaxis
         )
         if return_group:
             return hist, group
@@ -659,8 +647,8 @@ class Spectrum(Histogram):
 
     def saveto(self, filename_or_handle, group_name):
         if isinstance(filename_or_handle, str):
-            filename_or_handle = h5py.File(filename_or_handle, 'r+')
-        
+            filename_or_handle = h5py.File(filename_or_handle, "r+")
+
         comm = MPI.COMM_WORLD
         if comm.Get_size() > 1:
             spec = self.gather()
@@ -669,37 +657,36 @@ class Spectrum(Histogram):
 
         if comm.Get_rank() == self.root:
             group = filename_or_handle.create_group(group_name)
-            group.create_dataset('contents', 
-                                 data=spec.get_contents(flow=True), 
-                                 compression='gzip')
-            group.create_dataset('errors',
-                                 data=spec.get_errors(flow=True),
-                                 compression='gzip')
-            group.attrs['exposure'] = spec.exposure
-            AxisFactory.saveto(spec.xaxis, group, 'xaxis')
-            AxisFactory.saveto(spec.yaxis, group, 'yaxis')
-            AxisFactory.saveto(spec.zaxis, group, 'zaxis')
+            group.create_dataset(
+                "contents", data=spec.get_contents(flow=True), compression="gzip"
+            )
+            group.create_dataset(
+                "errors", data=spec.get_errors(flow=True), compression="gzip"
+            )
+            group.attrs["exposure"] = spec.exposure
+            AxisFactory.saveto(spec.xaxis, group, "xaxis")
+            AxisFactory.saveto(spec.yaxis, group, "yaxis")
+            AxisFactory.saveto(spec.zaxis, group, "zaxis")
 
             return group
 
     @staticmethod
     def loadfrom(filename_or_handle, group_name, return_group=False):
-        hist, group = Histogram.loadfrom(filename_or_handle, 
-                                         group_name, 
-                                         return_group=True)
+        hist, group = Histogram.loadfrom(
+            filename_or_handle, group_name, return_group=True
+        )
         spec = Spectrum.from_filled(
             contents=hist.get_contents(True),
             errors=hist.get_errors(True),
-            exposure=group.attrs['exposure'],
+            exposure=group.attrs["exposure"],
             xaxis=hist.xaxis,
             yaxis=hist.yaxis,
-            zaxis=hist.zaxis
+            zaxis=hist.zaxis,
         )
         if return_group:
             return spec, group
         else:
             return spec
-
 
 
 def activeguard(factory=None):
@@ -709,24 +696,29 @@ def activeguard(factory=None):
                 return fun(self, *args, **kwargs)
             else:
                 if factory:
-                    return factory()                    
+                    return factory()
+
         return wrap
+
     return dec
-    
+
+
 class ActiveObject:
     def __init__(self, root):
         self.root = root
         self.active = MPI.COMM_WORLD.Get_rank() == root
 
+
 class Dataset(ActiveObject):
     def __init__(self, h5ds=None, root=0):
         super().__init__(root)
-        self.h5ds=h5ds
+        self.h5ds = h5ds
 
     @property
     @activeguard(factory=dict)
     def attrs(self):
         return self.h5ds.attrs
+
 
 class Handle:
     def __init__(self):
@@ -735,7 +727,7 @@ class Handle:
     @abstractmethod
     def create_group(self, *args, **kwargs):
         pass
-        
+
     @abstractmethod
     def create_dataset(self, *args, **kwargs):
         pass
@@ -744,20 +736,19 @@ class Handle:
     def get(self, key):
         pass
 
+
 class ActiveHandle(ActiveObject):
     def __init__(self, h5obj=None, root=0):
         super().__init__(root)
-        self.h5obj=h5obj
+        self.h5obj = h5obj
 
     @activeguard(factory=Dataset)
     def create_dataset(self, *args, **kwargs):
-        return Dataset(h5ds=self.h5obj.create_dataset(*args, **kwargs),
-                       root=self.root)
+        return Dataset(h5ds=self.h5obj.create_dataset(*args, **kwargs), root=self.root)
 
     @activeguard(factory=Handle)
     def create_group(self, *args, **kwargs):
-        return Group(h5group=self.h5obj.create_group(*args, **kwargs),
-                     root=self.root)
+        return Group(h5group=self.h5obj.create_group(*args, **kwargs), root=self.root)
 
     @property
     @activeguard(factory=dict)
@@ -772,7 +763,7 @@ class ActiveHandle(ActiveObject):
     def __iter__(self):
         yield self.h5obj.__iter__()
 
-    
+
 class Group(ActiveHandle):
     def __init__(self, h5group=None, root=0):
         super().__init__(h5obj=h5group, root=root)
@@ -788,6 +779,7 @@ class Group(ActiveHandle):
         return Group(h5group=self.h5group.create_group(*args, **kwargs),
                      root=self.root)
     """
+
 
 class File(ActiveHandle):
     def __init__(self, *args, root=0, **kwargs):
@@ -819,5 +811,3 @@ class File(ActiveHandle):
 
     def __exit__(self, exception_type, exception_value, traceback):
         self.close()
-
-        
