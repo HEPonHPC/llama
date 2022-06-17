@@ -7,6 +7,8 @@ import h5py
 import boost_histogram as bh
 import pandana
 
+from abc import ABC, abstractmethod
+
 
 class Array:
     """Wraps a numpy array for data-parallel operations"""
@@ -173,10 +175,11 @@ class Histogram:
         self.root = 0
         self.proxy = HistProxy(self)
 
+
     def set_root(self, rank):
         self.root = rank
 
-    def reduce(self):
+    def gather(self):
         from mpi4py import MPI
 
         comm = MPI.COMM_WORLD
@@ -470,18 +473,25 @@ class Histogram:
         if isinstance(filename_or_handle, str):
             filename_or_handle = h5py.File(filename_or_handle, 'r+')
         
-        group = filename_or_handle.create_group(group_name)
-        group.create_dataset('contents', 
-                             data=self.get_contents(flow=True), 
-                             compression='gzip')
-        group.create_dataset('errors',
-                             data=self.get_errors(flow=True),
-                             compression='gzip')
-        AxisFactory.saveto(self.xaxis, group, 'xaxis')
-        AxisFactory.saveto(self.yaxis, group, 'yaxis')
-        AxisFactory.saveto(self.zaxis, group, 'zaxis')
+        comm = MPI.COMM_WORLD
+        if comm.Get_size() > 1:
+            hist = self.gather()
+        else:
+            hist = self
 
-        return group
+        if comm.Get_rank() == self.root:
+            group = filename_or_handle.create_group(group_name)
+            group.create_dataset('contents', 
+                                 data=hist.get_contents(flow=True), 
+                                 compression='gzip')
+            group.create_dataset('errors',
+                                 data=hist.get_errors(flow=True),
+                                 compression='gzip')
+            AxisFactory.saveto(hist.xaxis, group, 'xaxis')
+            AxisFactory.saveto(hist.yaxis, group, 'yaxis')
+            AxisFactory.saveto(hist.zaxis, group, 'zaxis')
+
+            return group
 
     @staticmethod
     def loadfrom(filename_or_handle, group_name, return_group=False):
@@ -509,9 +519,9 @@ class Histogram:
 
 
 class Spectrum(Histogram):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, exposure=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.exposure = None
+        self.exposure = exposure
 
     def copy(self):
         return Spectrum.from_filled(
@@ -621,9 +631,56 @@ class Spectrum(Histogram):
         eq_exposure = self.exposure == other.exposure
         return eq_exposure & super().__eq__(other)
 
+    def gather(self):
+        from mpi4py import MPI
+
+        comm = MPI.COMM_WORLD
+
+        contents = self.get_contents(True)
+        squared_errors = self.get_errors(True) ** 2
+
+        contents = comm.reduce(contents, MPI.SUM, root=self.root)
+        squared_errors = comm.reduce(squared_errors, MPI.SUM, root=self.root)
+        exposure = comm.reduce(self.exposure, MPI.SUM, root=self.root)
+
+        if comm.Get_rank() == self.root:
+            result = Spectrum.from_filled(
+                contents=contents,
+                errors=np.sqrt(squared_errors),
+                exposure=exposure,
+                xaxis=self.xaxis,
+                yaxis=self.yaxis,
+                zaxis=self.zaxis,
+            )
+        else:
+            result = Spectrum(*self.axes)
+
+        return result
+
     def saveto(self, filename_or_handle, group_name):
-        group = super().saveto(filename_or_handle, group_name)
-        group.attrs['exposure'] = self.exposure
+        if isinstance(filename_or_handle, str):
+            filename_or_handle = h5py.File(filename_or_handle, 'r+')
+        
+        comm = MPI.COMM_WORLD
+        if comm.Get_size() > 1:
+            spec = self.gather()
+        else:
+            spec = self
+
+        if comm.Get_rank() == self.root:
+            group = filename_or_handle.create_group(group_name)
+            group.create_dataset('contents', 
+                                 data=spec.get_contents(flow=True), 
+                                 compression='gzip')
+            group.create_dataset('errors',
+                                 data=spec.get_errors(flow=True),
+                                 compression='gzip')
+            group.attrs['exposure'] = spec.exposure
+            AxisFactory.saveto(spec.xaxis, group, 'xaxis')
+            AxisFactory.saveto(spec.yaxis, group, 'yaxis')
+            AxisFactory.saveto(spec.zaxis, group, 'zaxis')
+
+            return group
 
     @staticmethod
     def loadfrom(filename_or_handle, group_name, return_group=False):
@@ -643,5 +700,124 @@ class Spectrum(Histogram):
         else:
             return spec
 
+
+
+def activeguard(factory=None):
+    def dec(fun):
+        def wrap(self, *args, **kwargs):
+            if self.active:
+                return fun(self, *args, **kwargs)
+            else:
+                if factory:
+                    return factory()                    
+        return wrap
+    return dec
+    
+class ActiveObject:
+    def __init__(self, root):
+        self.root = root
+        self.active = MPI.COMM_WORLD.Get_rank() == root
+
+class Dataset(ActiveObject):
+    def __init__(self, h5ds=None, root=0):
+        super().__init__(root)
+        self.h5ds=h5ds
+
+    @property
+    @activeguard(factory=dict)
+    def attrs(self):
+        return self.h5ds.attrs
+
+class Handle:
+    def __init__(self):
+        pass
+
+    @abstractmethod
+    def create_group(self, *args, **kwargs):
+        pass
         
+    @abstractmethod
+    def create_dataset(self, *args, **kwargs):
+        pass
+
+    @abstractmethod
+    def get(self, key):
+        pass
+
+class ActiveHandle(ActiveObject):
+    def __init__(self, h5obj=None, root=0):
+        super().__init__(root)
+        self.h5obj=h5obj
+
+    @activeguard(factory=Dataset)
+    def create_dataset(self, *args, **kwargs):
+        return Dataset(h5ds=self.h5obj.create_dataset(*args, **kwargs),
+                       root=self.root)
+
+    @activeguard(factory=Handle)
+    def create_group(self, *args, **kwargs):
+        return Group(h5group=self.h5obj.create_group(*args, **kwargs),
+                     root=self.root)
+
+    @property
+    @activeguard(factory=dict)
+    def attrs(self):
+        return self.h5obj.attrs
+
+    @activeguard(factory=Dataset)
+    def get(self, key):
+        return self.h5obj[key]
+
+    @activeguard(factory=list)
+    def __iter__(self):
+        yield self.h5obj.__iter__()
+
+    
+class Group(ActiveHandle):
+    def __init__(self, h5group=None, root=0):
+        super().__init__(h5obj=h5group, root=root)
+
+    """
+    @activeguard(factory=Dataset)
+    def create_dataset(self, *args, **kwargs):
+        return Dataset(h5ds=self.h5group.create_dataset(*args, **kwargs),
+                       root=self.root)
+
+    @activeguard()
+    def create_group(self, *args, **kwargs):
+        return Group(h5group=self.h5group.create_group(*args, **kwargs),
+                     root=self.root)
+    """
+
+class File(ActiveHandle):
+    def __init__(self, *args, root=0, **kwargs):
+        super().__init__(h5obj=None, root=root)
+        self.h5obj = self.open(*args, **kwargs)
+
+    @activeguard()
+    def open(self, *args, **kwargs):
+        return h5py.File(*args, **kwargs)
+
+    @activeguard()
+    def close(self):
+        self.h5obj.close()
+
+    """
+    @activeguard(factory=Group)
+    def create_group(self, *args, **kwargs):
+        return Group(h5group=self.h5file.create_group(*args, **kwargs),
+                     root=self.root)
+
+    @activeguard(factory=Dataset)
+    def create_dataset(self, *args, **kwargs):
+        return Dataset(h5ds=self.h5file.create_dataset(*args, **kwargs),
+                       root=self.root)
+    """
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exception_type, exception_value, traceback):
+        self.close()
+
         
