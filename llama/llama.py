@@ -710,6 +710,24 @@ class Spectrum(Histogram):
         else:
             return spec
 
+    def azimov_data(self, exposure):
+        return self.scale_to_exposure(exposure)
+
+    def mock_data(self, exposure=-1, seed=0):
+        scale = 1 if exposure < 0 else exposure / self.exposure
+        rng = np.random.default_rng(seed)
+        orig = self.get_contents(flow=True)
+        fluctuated = rng.poisson(orig * scale, orig.shape)
+        errors = np.sqrt(fluctuated)
+        return Spectrum.from_filled(
+            contents=fluctuated,
+            errors=errors,
+            xaxis=self.xaxis,
+            yaxis=self.yaxis,
+            zaxis=self.zaxis,
+            exposure=exposure,
+        )
+
 
 def activeguard(factory=None):
     def dec(fun):
