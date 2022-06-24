@@ -480,6 +480,8 @@ class Histogram:
         return self.bhist.axes
 
     def saveto(self, filename_or_handle, group_name):
+        from mpi4py import MPI
+
         if isinstance(filename_or_handle, str):
             filename_or_handle = h5py.File(filename_or_handle, "r+")
 
@@ -664,6 +666,8 @@ class Spectrum(Histogram):
         return result
 
     def saveto(self, filename_or_handle, group_name):
+        from mpi4py import MPI
+
         if isinstance(filename_or_handle, str):
             filename_or_handle = h5py.File(filename_or_handle, "r+")
 
@@ -723,6 +727,8 @@ def activeguard(factory=None):
 
 class ActiveObject:
     def __init__(self, root):
+        from mpi4py import MPI
+
         self.root = root
         self.active = MPI.COMM_WORLD.Get_rank() == root
 
