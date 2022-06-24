@@ -2,12 +2,19 @@ import numpy as np
 
 # from typing_extensions import Protocol
 from typing import Union, Tuple, List
-from mpi4py import MPI
+
 import h5py
 import boost_histogram as bh
 import pandana
 
+import enum
+
 from abc import ABC, abstractmethod
+
+
+class Kind(str, enum.Enum):
+    COUNT = "COUNT"
+    MEAN = "MEAN"
 
 
 class Array:
@@ -166,6 +173,8 @@ class Histogram:
 
         self.root = 0
         self.proxy = HistProxy(self)
+
+        self._kind = None
 
     def set_root(self, rank):
         self.root = rank
@@ -446,15 +455,19 @@ class Histogram:
 
     @property
     def kind(self):
-        return self.bhist.kind
+        return self._kind or self.bhist.kind
 
-    def values():
+    @kind.setter
+    def kind(self, value):
+        self._kind = value
+
+    def values(self):
         return self.get_contents()
 
-    def variances():
-        return self.get_errors()
+    def variances(self):
+        return np.square(self.get_errors())
 
-    def counts():
+    def counts(self):
         return self.bhist.counts()
 
     @property
