@@ -271,11 +271,16 @@ class Histogram:
         """
         if isinstance(other, Histogram):
             assert self._axes_consistent_with(other)
+
             quotient_contents = self.get_contents(flow=True) / other.get_contents(
                 flow=True
             )
-            quotient_errors = np.sqrt(
-                other.get_errors(flow=True) ** 2 + self.get_errors(flow=True) ** 2
+            quotient_errors = (
+                np.sqrt(
+                    (other.get_errors(flow=True) / other.get_contents(flow=True)) ** 2
+                    + (self.get_errors(flow=True) / self.get_contents(flow=True)) ** 2
+                )
+                * quotient_contents
             )
             return Histogram.from_filled(
                 contents=quotient_contents,
@@ -288,7 +293,7 @@ class Histogram:
         elif isinstance(other, float) | isinstance(other, int):
             return type(self).from_filled(
                 contents=self.get_contents(flow=True) * other,
-                errors=self.get_errors(flow=True),
+                errors=self.get_errors(flow=True) * other,
                 xaxis=self.xaxis,
                 yaxis=self.yaxis,
                 zaxis=self.zaxis,
