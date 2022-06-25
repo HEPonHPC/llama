@@ -300,8 +300,8 @@ class Histogram:
 
         elif isinstance(other, float) | isinstance(other, int):
             return type(self).from_filled(
-                contents=self.get_contents(flow=True) * other,
-                errors=self.get_errors(flow=True) * other,
+                contents=self.get_contents(flow=True) / other,
+                errors=self.get_errors(flow=True) / other,
                 xaxis=self.xaxis,
                 yaxis=self.yaxis,
                 zaxis=self.zaxis,
@@ -334,15 +334,17 @@ class Histogram:
         """
         if isinstance(other, Histogram):
             assert self._axes_consistent_with(other)
-            summed_contents = other.get_contents(flow=True) * self.get_contents(
-                flow=True
-            )
-            summed_errors = np.sqrt(
-                other.get_errors(flow=True) ** 2 + self.get_errors(flow=True) ** 2
+            prod_contents = other.get_contents(flow=True) * self.get_contents(flow=True)
+            prod_errors = (
+                np.sqrt(
+                    (other.get_errors(flow=True) / other.get_contents(flow=True)) ** 2
+                    + (self.get_errors(flow=True) / self.get_contents(flow=True)) ** 2
+                )
+                * prod_contents
             )
             return type(self).from_filled(
-                contents=summed_contents,
-                errors=summed_errors,
+                contents=prod_contents,
+                errors=prod_errors,
                 xaxis=self.xaxis,
                 yaxis=self.yaxis,
                 zaxis=self.zaxis,
@@ -620,10 +622,11 @@ class Spectrum(Histogram):
             spec.exposure = self.exposure
             return spec
 
-    def __mult__(self, other):
+    def __mul__(self, other):
         if isinstance(other, Histogram):
-            raise TypeError("Cannot multiply Spectra")
-
+            spec = super().__mul__(other)
+            spec.exposure = self.exposure
+            return spec
         else:
             spec = super().__mul__(other)
             spec.exposure = self.exposure * other
