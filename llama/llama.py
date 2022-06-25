@@ -2,12 +2,19 @@ import numpy as np
 
 # from typing_extensions import Protocol
 from typing import Union, Tuple, List
-from mpi4py import MPI
+
 import h5py
 import boost_histogram as bh
 import pandana
 
+import enum
+
 from abc import ABC, abstractmethod
+
+
+class Kind(str, enum.Enum):
+    COUNT = "COUNT"
+    MEAN = "MEAN"
 
 
 class Array:
@@ -167,6 +174,8 @@ class Histogram:
         self.root = 0
         self.proxy = HistProxy(self)
 
+        self._kind = None
+
     def set_root(self, rank):
         self.root = rank
 
@@ -268,11 +277,16 @@ class Histogram:
         """
         if isinstance(other, Histogram):
             assert self._axes_consistent_with(other)
+
             quotient_contents = self.get_contents(flow=True) / other.get_contents(
                 flow=True
             )
-            quotient_errors = np.sqrt(
-                other.get_errors(flow=True) ** 2 + self.get_errors(flow=True) ** 2
+            quotient_errors = (
+                np.sqrt(
+                    (other.get_errors(flow=True) / other.get_contents(flow=True)) ** 2
+                    + (self.get_errors(flow=True) / self.get_contents(flow=True)) ** 2
+                )
+                * quotient_contents
             )
             return Histogram.from_filled(
                 contents=quotient_contents,
@@ -285,7 +299,7 @@ class Histogram:
         elif isinstance(other, float) | isinstance(other, int):
             return type(self).from_filled(
                 contents=self.get_contents(flow=True) * other,
-                errors=self.get_errors(flow=True),
+                errors=self.get_errors(flow=True) * other,
                 xaxis=self.xaxis,
                 yaxis=self.yaxis,
                 zaxis=self.zaxis,
@@ -452,15 +466,19 @@ class Histogram:
 
     @property
     def kind(self):
-        return self.bhist.kind
+        return self._kind or self.bhist.kind
 
-    def values():
+    @kind.setter
+    def kind(self, value):
+        self._kind = value
+
+    def values(self):
         return self.get_contents()
 
-    def variances():
-        return self.get_errors()
+    def variances(self):
+        return np.square(self.get_errors())
 
-    def counts():
+    def counts(self):
         return self.bhist.counts()
 
     @property
@@ -468,6 +486,8 @@ class Histogram:
         return self.bhist.axes
 
     def saveto(self, filename_or_handle, group_name):
+        from mpi4py import MPI
+
         if isinstance(filename_or_handle, str):
             filename_or_handle = h5py.File(filename_or_handle, "r+")
 
@@ -652,6 +672,8 @@ class Spectrum(Histogram):
         return result
 
     def saveto(self, filename_or_handle, group_name):
+        from mpi4py import MPI
+
         if isinstance(filename_or_handle, str):
             filename_or_handle = h5py.File(filename_or_handle, "r+")
 
@@ -729,6 +751,8 @@ def activeguard(factory=None):
 
 class ActiveObject:
     def __init__(self, root):
+        from mpi4py import MPI
+
         self.root = root
         self.active = MPI.COMM_WORLD.Get_rank() == root
 
