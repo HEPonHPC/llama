@@ -170,6 +170,12 @@ class Histogram:
     def set_root(self, rank):
         self.root = rank
 
+    def unravel_axes(self):
+        return AxisFactory.Regular(';'.join([ax.metadata for ax in self.axes]),
+                                   bins=self.bhist.size,
+                                   start=0,
+                                   stop=self.bhist.size)
+
     def gather(self):
         from mpi4py import MPI
 
