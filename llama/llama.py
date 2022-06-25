@@ -226,6 +226,7 @@ class Histogram:
     def fill(self, *args, **kwargs):
         self.bhist.fill(*args, **kwargs)
         self.set_w2()
+        return self
 
     def _axes_consistent_with(self, other):
         return self.bhist.axes == other.bhist.axes
