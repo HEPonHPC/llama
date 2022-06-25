@@ -180,10 +180,12 @@ class Histogram:
         self.root = rank
 
     def unravel_axes(self):
-        return AxisFactory.Regular(';'.join([ax.metadata for ax in self.axes]),
-                                   bins=self.bhist.size,
-                                   start=0,
-                                   stop=self.bhist.size)
+        return AxisFactory.Regular(
+            ";".join([ax.metadata for ax in self.axes]),
+            bins=self.bhist.size,
+            start=0,
+            stop=self.bhist.size,
+        )
 
     def gather(self):
         from mpi4py import MPI
@@ -734,6 +736,7 @@ class Spectrum(Histogram):
             zaxis=self.zaxis,
             exposure=exposure,
         )
+
 
 def activeguard(factory=None):
     def dec(fun):
