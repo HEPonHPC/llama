@@ -11,6 +11,19 @@ import enum
 from abc import ABC, abstractmethod
 
 
+def activeguard(factory=None):
+    def dec(fun):
+        def wrap(self, *args, **kwargs):
+            if self.active:
+                return fun(self, *args, **kwargs)
+            else:
+                if factory:
+                    return factory()
+
+        return wrap
+
+    return dec
+
 class Kind(str, enum.Enum):
     COUNT = "COUNT"
     MEAN = "MEAN"
@@ -63,7 +76,7 @@ class Array:
     def __rmul__(self, other):
         return self.__mul__(other)
 
-    def __matmul__(self, other: Union["Array", np.Array]) -> "Array":
+    def __matmul__(self, other: Union["Array", np.array]) -> "Array":
         if isinstance(other, Array):
             return np.matmul(self.data, other.data)
         else:
@@ -191,8 +204,8 @@ class Histogram:
 
         comm = MPI.COMM_WORLD
 
-        contents = self.get_contents()
-        squared_errors = self.get_errors() ** 2
+        contents = self.get_contents(flow=True)
+        squared_errors = self.get_errors(flow=True) ** 2
 
         contents = comm.reduce(contents, MPI.SUM, root=self.root)
         squared_errors = comm.reduce(squared_errors, MPI.SUM, root=self.root)
@@ -209,6 +222,30 @@ class Histogram:
             result = Histogram(*self.axes)
 
         return result
+
+    def bcast(self):
+        from mpi4py import MPI
+        
+        comm = MPI.COMM_WORLD
+        if self.root == comm.Get_rank():
+            bcontents = self.get_contents(flow=True).flatten()
+            print(bcontents)
+            berrors = self.get_errors(flow=True)
+            print(berrors)
+        else:
+            bcontents = np.empty_like(self.get_contents(flow=True))
+            berrors = np.empty_like(self.get_contents(flow=True))
+
+        comm.Bcast(bcontents, root=self.root)
+        comm.Bcast(berrors, root=self.root)
+
+        return Histogram.from_filled(
+            contents=bcontents,
+            errors=berrors,
+            xaxis=self.xaxis,
+            yaxis=self.yaxis,
+            zaxis=self.zaxis,
+        )
 
     def copy(self):
         return Histogram.filled_histogram(
@@ -279,14 +316,15 @@ class Histogram:
         """
         if isinstance(other, Histogram):
             assert self._axes_consistent_with(other)
-
-            quotient_contents = self.get_contents(flow=True) / other.get_contents(
+            gathered = self.gather()
+            other = other.gather()
+            quotient_contents = gathered.get_contents(flow=True) / other.get_contents(
                 flow=True
             )
             quotient_errors = (
                 np.sqrt(
                     (other.get_errors(flow=True) / other.get_contents(flow=True)) ** 2
-                    + (self.get_errors(flow=True) / self.get_contents(flow=True)) ** 2
+                    + (gathered.get_errors(flow=True) / gathered.get_contents(flow=True)) ** 2
                 )
                 * quotient_contents
             )
@@ -319,6 +357,7 @@ class Histogram:
         else:
             return False
 
+
     def __mul__(self, other: Union["Histogram", int, float]) -> "Histogram":
         """If other is a histogram, do bin by bin multiplication.
 
@@ -334,11 +373,15 @@ class Histogram:
         """
         if isinstance(other, Histogram):
             assert self._axes_consistent_with(other)
-            prod_contents = other.get_contents(flow=True) * self.get_contents(flow=True)
+            
+            gathered = self.gather()
+            other = other.gather()
+
+            prod_contents = other.get_contents(flow=True) * gathered.get_contents(flow=True)
             prod_errors = (
                 np.sqrt(
                     (other.get_errors(flow=True) / other.get_contents(flow=True)) ** 2
-                    + (self.get_errors(flow=True) / self.get_contents(flow=True)) ** 2
+                    + (gathered.get_errors(flow=True) / gathered.get_contents(flow=True)) ** 2
                 )
                 * prod_contents
             )
@@ -740,21 +783,6 @@ class Spectrum(Histogram):
             zaxis=self.zaxis,
             exposure=exposure,
         )
-
-
-def activeguard(factory=None):
-    def dec(fun):
-        def wrap(self, *args, **kwargs):
-            if self.active:
-                return fun(self, *args, **kwargs)
-            else:
-                if factory:
-                    return factory()
-
-        return wrap
-
-    return dec
-
 
 class ActiveObject:
     def __init__(self, root):
