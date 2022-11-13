@@ -5,7 +5,6 @@ from typing import Union, Tuple, List
 
 import h5py
 import boost_histogram as bh
-import pandana
 
 import enum
 
@@ -44,28 +43,28 @@ class Array:
     def __array__(self) -> np.array:
         return self._data
 
-    def __truediv__(self, other: Union["array", float, int]):
+    def __truediv__(self, other: Union["Array", float, int]):
         """Calculate element by element quotient"""
-        if isinstance(other, array):
-            return array(self.data / other.data)
+        if isinstance(other, Array):
+            return Array(self.data / other.data)
         else:
-            return array(self.data * other)
+            return Array(self.data * other)
 
-    def __rtruediv__(self, other: Union["array", float, int]):
+    def __rtruediv__(self, other: Union["Array", float, int]):
         return self.__truediv__(other)
 
-    def __mul__(self, other: Union["array", float, int]):
+    def __mul__(self, other: Union["Array", float, int]):
         """Calculate the dot product with other"""
-        if isinstance(other, array):
-            return array(self.data * other.data)
+        if isinstance(other, Array):
+            return Array(self.data * other.data)
         else:
-            return array(self.data * other)
+            return Array(self.data * other)
 
     def __rmul__(self, other):
         return self.__mul__(other)
 
-    def __matmul__(self, other: Union["array", np.array]) -> "array":
-        if isinstance(other, array):
+    def __matmul__(self, other: Union["Array", np.Array]) -> "Array":
+        if isinstance(other, Array):
             return np.matmul(self.data, other.data)
         else:
             return np.matmul(self.data, other)
@@ -265,7 +264,7 @@ class Histogram:
     def set_errors(self, errors):
         self.errors = errors
 
-    def __truediv__(self, other: Union["histogram", int, float]) -> "histogram":
+    def __truediv__(self, other: Union["Histogram", int, float]) -> "Histogram":
         """If other is a histogram, do bin by bin division.
 
         Since a1 / a2 + b1 / b2 =/= (a1 + b1) / (a2 + b2)
@@ -310,7 +309,7 @@ class Histogram:
         else:
             raise TypeError
 
-    def __eq__(self, other: "histogram") -> bool:
+    def __eq__(self, other: "Histogram") -> bool:
         """Two histograms are equal if their contents are equal
 
         TODO: Does this need to compare the global histograms or local ones?
@@ -320,7 +319,7 @@ class Histogram:
         else:
             return False
 
-    def __mul__(self, other: Union["histogram", int, float]) -> "histogram":
+    def __mul__(self, other: Union["Histogram", int, float]) -> "Histogram":
         """If other is a histogram, do bin by bin multiplication.
 
         Since a1 / a2 + b1 / b2 =/= (a1 + b1) / (a2 + b2)
@@ -362,7 +361,7 @@ class Histogram:
         else:
             raise TypeError
 
-    def __add__(self, other: Union["histogram", int, float]) -> "histogram":
+    def __add__(self, other: Union["Histogram", int, float]) -> "Histogram":
         """If other is a histogram, do bin-by-bin addition.
         Since addition is commutative, no reductions occur
 
@@ -402,7 +401,7 @@ class Histogram:
     def __radd__(self, other):
         return self.__add__(other)
 
-    def __sub__(self, other: "histogram") -> "histogram":
+    def __sub__(self, other: "Histogram") -> "Histogram":
         """If other is a histogram, do bin-by-bin subtraction.
         Since addition is commutative, no reductions occur.
 
@@ -558,6 +557,7 @@ class Spectrum(Histogram):
 
     @staticmethod
     def from_pandana(pand, *args, **kwargs):
+        import pandana
         assert isinstance(pand, pandana.core.spectrum.Spectrum)
         s = Spectrum(*args, **kwargs)
         s.fill(pand.df(), pand.POT(), pand.weight())
@@ -597,7 +597,7 @@ class Spectrum(Histogram):
             scaled_other = other.scale_to_exposure(self.exposure)
             summed = super().__add__(other)
             summed.exposure = self.exposure
-            return accumulated
+            return summed
 
         elif isinstance(other, Histogram):
             raise TypeError(
